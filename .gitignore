@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Splunk runtime files — never commit these
+*.pid
+*.lock
+splunkd.log
+
+# Sensitive / OPSEC
+# Never commit files containing real IPs, credentials, or internal topology
+*.key
+*.pem
+secrets.conf
+password.conf
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp
+*.tmp
+*.bak
