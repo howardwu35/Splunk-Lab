@@ -1,0 +1,186 @@
+<dashboard version="1.1">
+  <label>SMB Brute Force Detection</label>
+  <description>Real-time monitoring dashboard for SMB network authentication attacks. Filters on Logon_Type=3 to isolate network-based events from background Windows service noise.</description>
+
+  <!-- =====================================================================
+       ROW 1: KPI SINGLE-VALUE COUNTERS
+       Turns red when Logon_Type=3 attack events are detected
+  ====================================================================== -->
+  <row>
+    <panel>
+      <title>❌ Brute Force Attempts (Logon_Type=3 Failures)</title>
+      <single>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security" EventCode=4625 Logon_Type=3
+            | stats count
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="colorBy">value</option>
+        <option name="rangeColors">["0x65a637","0xd93f3c"]</option>
+        <option name="rangeValues">[1]</option>
+        <option name="useColors">1</option>
+      </single>
+    </panel>
+
+    <panel>
+      <title>🎯 Network Breach Detected (Logon_Type=3 Success)</title>
+      <single>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security" EventCode=4624 Logon_Type=3
+            | stats count
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="colorBy">value</option>
+        <option name="rangeColors">["0x65a637","0xd93f3c"]</option>
+        <option name="rangeValues">[1]</option>
+        <option name="useColors">1</option>
+      </single>
+    </panel>
+
+    <panel>
+      <title>📊 Total Security Events (Last 60 Min)</title>
+      <single>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security"
+            | stats count
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+    </panel>
+  </row>
+
+  <!-- =====================================================================
+       ROW 2: ATTACK VELOCITY CHART
+       timechart span=1m — reveals the brute force spike vs. flat baseline
+  ====================================================================== -->
+  <row>
+    <panel>
+      <title>⚡ Attack Velocity — Failed SMB Logons Per Minute (Logon_Type=3)</title>
+      <chart>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security" Logon_Type=3
+            | eval Event_Type = case(
+                EventCode == 4624, "Successful Network Logon",
+                EventCode == 4625, "Failed Network Logon (Brute Force)",
+                1=1, "Other"
+              )
+            | timechart span=1m count BY Event_Type
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.axisTitleX.text">Time</option>
+        <option name="charting.axisTitleY.text">Event Count</option>
+        <option name="charting.seriesColors">["0xd93f3c","0x65a637"]</option>
+        <option name="charting.legend.placement">bottom</option>
+        <option name="charting.drilldown">none</option>
+      </chart>
+    </panel>
+  </row>
+
+  <!-- =====================================================================
+       ROW 3: ATTACKER IP FILTER TOKEN INPUT
+       Allows analysts to filter the forensic table by source IP
+  ====================================================================== -->
+  <row>
+    <panel>
+      <title>🔎 Filter by Attacker IP</title>
+      <input type="dropdown" token="ip_tok" searchWhenChanged="true">
+        <label>Attacker IP Address</label>
+        <default>*</default>
+        <choice value="*">All IPs</choice>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security" Logon_Type=3 EventCode=4625
+            | stats count BY IpAddress
+            | fields IpAddress
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <fieldForLabel>IpAddress</fieldForLabel>
+        <fieldForValue>IpAddress</fieldForValue>
+      </input>
+    </panel>
+  </row>
+
+  <!-- =====================================================================
+       ROW 4: FORENSIC EVIDENCE TABLE
+       Full timeline of all network-based events, filtered by IP token
+  ====================================================================== -->
+  <row>
+    <panel>
+      <title>🗂️ Forensic Incident Timeline — Network Events (Logon_Type=3)</title>
+      <table>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security" Logon_Type=3 IpAddress="$ip_tok$"
+            | eval Security_State = case(
+                Logon_Type == 3 AND EventCode == 4624, "🎯 NETWORK BREACH",
+                Logon_Type == 3 AND EventCode == 4625, "❌ BRUTE FORCE",
+                1=1, "Normal Noise"
+              )
+            | search Security_State != "Normal Noise"
+            | table _time, IpAddress, Account_Name, Workstation_Name, EventCode, Logon_Type, Security_State
+            | sort -_time
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="count">20</option>
+        <option name="wrap">true</option>
+        <format type="color" field="Security_State">
+          <colorPalette type="map">{"🎯 NETWORK BREACH":#d93f3c,"❌ BRUTE FORCE":#f8be34}</colorPalette>
+        </format>
+      </table>
+    </panel>
+  </row>
+
+  <!-- =====================================================================
+       ROW 5: LOGON TYPE NOISE ANALYSIS
+       Shows the distribution of all logon types — baseline vs attack
+  ====================================================================== -->
+  <row>
+    <panel>
+      <title>📋 Logon Type Distribution — Noise vs Signal</title>
+      <table>
+        <search>
+          <query>
+            index=main source="WinEventLog:Security" (EventCode=4624 OR EventCode=4625)
+            | eval Logon_Type_Label = case(
+                Logon_Type == 2, "Type 2 — Interactive (Console)",
+                Logon_Type == 3, "Type 3 — Network / SMB ← ATTACK SURFACE",
+                Logon_Type == 5, "Type 5 — Service (Background)",
+                Logon_Type == 7, "Type 7 — Unlock",
+                Logon_Type == 10, "Type 10 — RemoteInteractive (RDP)",
+                1=1, "Other: " . Logon_Type
+              )
+            | eval Event_Result = case(EventCode == 4624, "Success", EventCode == 4625, "Failure", 1=1, "Unknown")
+            | stats count BY Logon_Type_Label, Event_Result
+            | sort -count
+          </query>
+          <earliest>-60m@m</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+</dashboard>
