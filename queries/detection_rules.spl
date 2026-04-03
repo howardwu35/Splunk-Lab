@@ -1,0 +1,96 @@
+# =============================================================================
+# detection_rules.spl — SPL Queries for SMB Brute Force Detection
+# SIEM: Splunk Enterprise (Free License)
+# Author: Howard Wu
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# QUERY 1: Raw Brute Force Flood
+# Shows all failed network logon attempts — the raw signal from CrackMapExec
+# Use for: Initial triage, confirming attack is generating events
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" EventCode=4625 Logon_Type=3
+| table _time, IpAddress, Account_Name, Workstation_Name, EventCode
+| sort -_time
+
+
+# -----------------------------------------------------------------------------
+# QUERY 2: Brute Force with Victim/Attacker Enrichment
+# Groups failure count by source IP — reveals the attacker's machine
+# Use for: Identifying attacker IP, quantifying attack scale
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" EventCode=4625 Logon_Type=3
+| stats count AS "Failed_Attempts" BY IpAddress, Account_Name
+| sort -Failed_Attempts
+
+
+# -----------------------------------------------------------------------------
+# QUERY 3: Attack Velocity Over Time (used in timechart panel)
+# 1-minute buckets — produces the spike visualization on the dashboard
+# Use for: Proving attack timing, showing burst vs baseline
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" EventCode=4625 Logon_Type=3
+| timechart span=1m count AS "Failed_Attempts"
+
+
+# -----------------------------------------------------------------------------
+# QUERY 4: Security State Classification (core detection logic)
+# Uses eval + case() to reclassify events by threat level at search time
+# Filters out all "Normal Noise" (Logon_Type=2 service/interactive events)
+# Use for: The main forensic evidence table on the dashboard
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" Logon_Type=3
+| eval Security_State = case(
+    Logon_Type == 3 AND EventCode == 4624, "NETWORK BREACH",
+    Logon_Type == 3 AND EventCode == 4625, "BRUTE FORCE",
+    1=1, "Normal Noise"
+  )
+| search Security_State != "Normal Noise"
+| table _time, IpAddress, Account_Name, EventCode, Logon_Type, Security_State
+| sort -_time
+
+
+# -----------------------------------------------------------------------------
+# QUERY 5: Isolate the Successful Compromise (the needle in the haystack)
+# A single 4624 from Logon_Type=3 after a brute force flood = confirmed breach
+# Use for: The "NETWORK BREACH" KPI single-value panel
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" EventCode=4624 Logon_Type=3
+| table _time, IpAddress, Account_Name, Workstation_Name
+| sort -_time
+
+
+# -----------------------------------------------------------------------------
+# QUERY 6: Logon Type Distribution (false positive analysis)
+# Shows breakdown of all logon types — used to tune out noise
+# Reveals the volume of Logon_Type=5 (Service) and Type=2 (Interactive)
+# vs the malicious Logon_Type=3 (Network)
+# Use for: Understanding baseline before building detection rules
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" (EventCode=4624 OR EventCode=4625)
+| eval Logon_Type_Label = case(
+    Logon_Type == 2, "Interactive (Console)",
+    Logon_Type == 3, "Network (SMB/RPC) ← ATTACK SURFACE",
+    Logon_Type == 5, "Service (Background)",
+    Logon_Type == 7, "Unlock",
+    Logon_Type == 10, "RemoteInteractive (RDP)",
+    1=1, "Other: " . Logon_Type
+  )
+| stats count BY Logon_Type_Label, EventCode
+| sort -count
+
+
+# -----------------------------------------------------------------------------
+# QUERY 7: Full Incident Timeline (tokenized — used with $ip_tok$ dashboard token)
+# Filters by attacker IP when selected in the dashboard dropdown
+# Use for: The forensic evidence table with IP filter token
+# -----------------------------------------------------------------------------
+index=main source="WinEventLog:Security" Logon_Type=3 IpAddress="$ip_tok$"
+| eval Security_State = case(
+    EventCode == 4624, "NETWORK BREACH",
+    EventCode == 4625, "BRUTE FORCE",
+    1=1, "Unknown"
+  )
+| table _time, IpAddress, Account_Name, EventCode, Security_State
+| sort _time
